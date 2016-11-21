@@ -1,0 +1,2 @@
+import os,time
+os.system('echo -e "/L\n/image send 573218745517 /home/pi/Downloads/Raspberry_Pi_Logo.png" | ./yowsup-cli demos --config config -y &')

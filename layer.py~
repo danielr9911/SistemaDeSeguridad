@@ -1,0 +1,200 @@
+# -*- coding: utf-8 -*-
+import os, subprocess, time
+import RPi.GPIO as GPIO
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(14, GPIO.OUT)
+
+# from yowsup.layers.interface                           import YowInterfaceLayer                 #Reply to the message
+# from yowsup.layers.interface                           import ProtocolEntityCallback            #Reply to the message
+# from yowsup.layers.protocol_messages.protocolentities  import TextMessageProtocolEntity         #Body message
+# from yowsup.layers.protocol_presence.protocolentities  import AvailablePresenceProtocolEntity   #Online
+# from yowsup.layers.protocol_presence.protocolentities  import UnavailablePresenceProtocolEntity #Offline
+# from yowsup.layers.protocol_presence.protocolentities  import PresenceProtocolEntity            #Name presence
+# from yowsup.layers.protocol_chatstate.protocolentities import OutgoingChatstateProtocolEntity   #is writing, writing pause
+# from yowsup.common.tools                               import Jid                               #is writing, writing pause
+
+from yowsup.layers.interface import YowInterfaceLayer, ProtocolEntityCallback
+from yowsup.layers.auth import YowAuthenticationProtocolLayer
+from yowsup.layers import YowLayerEvent, EventCallback
+from yowsup.layers.network import YowNetworkLayer
+import sys
+from yowsup.common import YowConstants
+import datetime
+import os
+import logging
+from yowsup.layers.protocol_groups.protocolentities      import *
+from yowsup.layers.protocol_presence.protocolentities    import *
+from yowsup.layers.protocol_messages.protocolentities    import *
+from yowsup.layers.protocol_ib.protocolentities          import *
+from yowsup.layers.protocol_iq.protocolentities          import *
+from yowsup.layers.protocol_contacts.protocolentities    import *
+from yowsup.layers.protocol_chatstate.protocolentities   import *
+from yowsup.layers.protocol_privacy.protocolentities     import *
+from yowsup.layers.protocol_media.protocolentities       import *
+from yowsup.layers.protocol_media.mediauploader import MediaUploader
+from yowsup.layers.protocol_profiles.protocolentities    import *
+from yowsup.common.tools import Jid
+from yowsup.common.optionalmodules import PILOptionalModule, AxolotlOptionalModule
+
+
+name = "NAMEPRESENCE"
+print "Bienvenido, ya puede empezar a escribir !"
+
+class EchoLayer(YowInterfaceLayer):
+    
+    DISCONNECT_ACTION_PROMPT = 0
+    DISCONNECT_ACTION_EXIT   = 1
+
+    def __init__(self):
+        super(EchoLayer, self).__init__()
+        YowInterfaceLayer.__init__(self)
+        self.accountDelWarnings = 0
+        self.connected = False
+        self.username = None
+        self.sendReceipts = True
+        self.sendRead = True
+        self.disconnectAction = self.__class__.DISCONNECT_ACTION_PROMPT
+        self.credentials = None
+
+    @ProtocolEntityCallback("message")
+    def onMessage(self, messageProtocolEntity):
+        if messageProtocolEntity.getType() == 'text':
+            time.sleep(0.5)
+            self.toLower(messageProtocolEntity.ack()) #Set received (double v)
+            time.sleep(0.5)
+            self.toLower(PresenceProtocolEntity(name = name)) #Set name Presence
+            time.sleep(0.5)
+            self.toLower(AvailablePresenceProtocolEntity()) #Set online
+            time.sleep(0.5)
+            self.toLower(messageProtocolEntity.ack(True)) #Set read (double v blue)
+            time.sleep(0.5)
+            self.toLower(OutgoingChatstateProtocolEntity(OutgoingChatstateProtocolEntity.STATE_TYPING, Jid.normalize(messageProtocolEntity.getFrom(False)) )) #Set is writing
+            time.sleep(1)
+            self.toLower(OutgoingChatstateProtocolEntity(OutgoingChatstateProtocolEntity.STATE_PAUSED, Jid.normalize(messageProtocolEntity.getFrom(False)) )) #Set no is writing
+            time.sleep(1)
+            self.onTextMessage(messageProtocolEntity) #Send the answer
+            time.sleep(1)
+            self.toLower(UnavailablePresenceProtocolEntity()) #Set offline
+
+    @ProtocolEntityCallback("receipt")
+    def onReceipt(self, entity):
+        print entity.ack()
+        self.toLower(entity.ack())
+
+    def onTextMessage(self,messageProtocolEntity):
+        namemitt   = messageProtocolEntity.getNotify() #Nombre del que envia
+        message    = messageProtocolEntity.getBody() #Mensaje recibido
+        recipient  = messageProtocolEntity.getFrom() #Numero del que envia
+        textmsg    = TextMessageProtocolEntity
+
+        message = message.lower() #Pasar a minusculas
+
+        print "Recibido: "+str(message)
+
+        if message == 'hola turingpi':
+            answer = "Hola " + namemitt + " como has estado hoy ?"
+            self.toLower(textmsg(answer, to = recipient ))
+            print answer
+
+        elif message == 'bien gracias':
+            answer = "Me alegra\n Que deseas hacer? \n 1. Para encender bombillo.\n 0. Para apagar bombillo."
+            self.toLower(textmsg(answer, to = recipient ))
+            print answer
+
+        elif message == 'foto':
+            self.image_send('573218745517','/home/pi/Downloads/Raspberry_Pi_Logo.png')
+            print "Foto enviada"
+
+        elif message == '1':
+            answer = "Opción 1\n El bombillo se ha encendido"
+            GPIO.output(14, True) # Pin 2 en alto
+
+            self.toLower(textmsg(answer, to = recipient ))
+            print answer
+
+        elif message == '0':
+
+            answer = "Opción 0\n El bombillo se ha apagado"
+            GPIO.output(14, False) # Pin 2 en alto
+
+            self.toLower(textmsg(answer, to = recipient ))
+            print answer
+        else:
+            answer = "No le entiendo"
+            self.toLower(textmsg(answer, to = recipient ))
+            print answer
+
+
+    def image_send(self, number, path, caption = None):
+        self.media_send(number, path, RequestUploadIqProtocolEntity.MEDIA_TYPE_IMAGE)
+
+    def media_send(self, number, path, mediaType, caption = None):
+        if self.assertConnected():
+            jid = self.aliasToJid(number)
+            entity = RequestUploadIqProtocolEntity(mediaType, filePath=path)
+            successFn = lambda successEntity, originalEntity: self.onRequestUploadResult(jid, mediaType, path, successEntity, originalEntity, caption)
+            errorFn = lambda errorEntity, originalEntity: self.onRequestUploadError(jid, path, errorEntity, originalEntity)
+            self._sendIq(entity, successFn, errorFn)
+            
+            self._sendIq(entity, successFn, errorFn)
+
+
+    def onRequestUploadResult(self, jid, mediaType, filePath, resultRequestUploadIqProtocolEntity, requestUploadIqProtocolEntity, caption = None):
+        if resultRequestUploadIqProtocolEntity.isDuplicate():
+            self.doSendMedia(mediaType, filePath, resultRequestUploadIqProtocolEntity.getUrl(), jid,
+                         resultRequestUploadIqProtocolEntity.getIp(), caption)
+        else:
+            successFn = lambda filePath, jid, url: self.doSendMedia(mediaType, filePath, url, jid, resultRequestUploadIqProtocolEntity.getIp(), caption)
+            mediaUploader = MediaUploader(jid, self.getOwnJid(), filePath,
+                                      resultRequestUploadIqProtocolEntity.getUrl(),
+                                      resultRequestUploadIqProtocolEntity.getResumeOffset(),
+                                      successFn, self.onUploadError, self.onUploadProgress, async=False)
+            mediaUploader.start()
+
+    def onRequestUploadError(self, jid, path, errorRequestUploadIqProtocolEntity, requestUploadIqProtocolEntity):
+        logger.error("Request upload for file %s for %s failed" % (path, jid))
+
+    def doSendMedia(self, mediaType, filePath, url, to, ip = None, caption = None):
+        if mediaType == RequestUploadIqProtocolEntity.MEDIA_TYPE_IMAGE:
+            entity = ImageDownloadableMediaMessageProtocolEntity.fromFilePath(filePath, url, ip, to, caption = caption)
+        elif mediaType == RequestUploadIqProtocolEntity.MEDIA_TYPE_AUDIO:
+            entity = AudioDownloadableMediaMessageProtocolEntity.fromFilePath(filePath, url, ip, to)
+        elif mediaType == RequestUploadIqProtocolEntity.MEDIA_TYPE_VIDEO:
+            entity = VideoDownloadableMediaMessageProtocolEntity.fromFilePath(filePath, url, ip, to, caption = caption)
+        self.toLower(entity)
+
+    def assertConnected(self):
+        if self.connected:
+            return True
+        else:
+            return False
+
+    # def image_send(self, number, path):
+    #     if self.assertConnected():
+    #         jid = self.aliasToJid(number)
+    #         entity = RequestUploadIqProtocolEntity(RequestUploadIqProtocolEntity.MEDIA_TYPE_IMAGE, filePath=path)
+    #         successFn = lambda successEntity, originalEntity: self.onRequestUploadResultImage(jid, path, successEntity, originalEntity)
+    #         errorFn = lambda errorEntity, originalEntity: self.onRequestUploadError(jid, path, errorEntity, originalEntity)
+
+    #         self._sendIq(entity, successFn, errorFn)
+
+    # def doSendImage(self, filePath, url, mediaType, to, ip = None):
+    #     caption = ""
+    #     entity = DownloadableMediaMessageProtocolEntity.fromFilePath(filePath, url, mediaType, ip, to, caption)
+    #     self.toLower(entity)
+
+    # def onRequestUploadResultImage(self, jid, filePath, resultRequestUploadIqProtocolEntity, requestUploadIqProtocolEntity):
+    #     if resultRequestUploadIqProtocolEntity.isDuplicate():
+    #         self.doSendImage(filePath, resultRequestUploadIqProtocolEntity.getUrl(), "image", jid,
+    #                          resultRequestUploadIqProtocolEntity.getIp())
+    #     else:
+    #         mediaUploader = MediaUploader(jid, self.getOwnJid(), filePath,
+    #                                   resultRequestUploadIqProtocolEntity.getUrl(),
+    #                                   resultRequestUploadIqProtocolEntity.getResumeOffset(),
+    #                                   self.onUploadSuccessImage, self.onUploadError, self.onUploadProgress, async=False)
+    #         mediaUploader.start()
+
+    # def onUploadSuccessImage(self, filePath, jid, url):
+    #     self.doSendImage(filePath, url, "audio", jid)
